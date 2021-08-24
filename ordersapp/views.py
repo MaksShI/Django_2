@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404, HttpResponseRedirect
+from django.http import JsonResponse
 from django.urls import reverse, reverse_lazy
 from django.db import transaction
 from django.dispatch import receiver
@@ -8,6 +9,7 @@ from django.forms import inlineformset_factory
 
 from django.views.generic import ListView, CreateView, UpdateView, DeleteView
 from django.views.generic.detail import DetailView
+from mainapp.models import Product
 
 from basketapp.models import Basket
 from ordersapp.models import Order, OrderItem
@@ -70,11 +72,6 @@ class OrderItemsCreate(CreateView):
         return super(OrderItemsCreate, self).form_valid(form)
 
 
-class OrderDelete(DeleteView):
-    model = Order
-    success_url = reverse_lazy('ordersapp:orders_list')
-
-
 class OrderRead(DetailView):
     model = Order
 
@@ -91,8 +88,7 @@ class OrderItemsUpdate(UpdateView):
 
     def get_context_data(self, **kwargs):
         OrderFormSet = inlineformset_factory(Order, OrderItem, form=OrderItemForm, extra=1)
-        data = super(OrderItemsUpdate, self).get_context_data(**kwargs)
-
+        data = super().get_context_data(**kwargs)
         if self.request.POST:
             data['orderitems'] = OrderFormSet(self.request.POST, instance=self.object)
         else:
@@ -112,21 +108,46 @@ class OrderItemsUpdate(UpdateView):
             if orderitems.is_valid():
                 orderitems.instance = self.object
                 orderitems.save()
+        if self.object.get_total_cost() == 0:
+            self.object.delete()
+
+        return super(OrderItemsUpdate, self).form_valid(form)
+
+
+class OrderDelete(DeleteView):
+    model = Order
+    success_url = reverse_lazy('ordersapp:orders_list')
+
+
+def order_forming_complete(request, pk):
+    order = get_object_or_404(Order, pk=pk)
+    order.status = Order.SENT_TO_PROCEED
+    order.save()
+
+    return HttpResponseRedirect(reverse('ordersapp:orders_list'))
 
 
 @receiver(pre_save, sender=OrderItem)
 @receiver(pre_save, sender=Basket)
-def product_quantity_update_save(sender, update_fields, instance, **kwargs):
-    if update_fields is 'quantity' or 'product':
-        if instance.pk:
-            instance.product.quantity -= instance.quantity - sender.object.get(instance.pk).quantity
-        else:
-            instance.product.quantity -= instance.quantity
-        instance.product.save()
+def product_quantity_update_on_save(sender, update_fields, instance, **kwargs):
+    # if update_fields is 'quantity' or 'product':
+    if instance.pk:
+        instance.product.quantity -= instance.quantity - sender.objects.get(instance.pk).quantity
+    else:
+        instance.product.quantity -= instance.quantity
+    instance.product.save()
 
 
 @receiver(pre_delete, sender=OrderItem)
 @receiver(pre_delete, sender=Basket)
-def product_quantity_update_delete(sender, instance, **kwargs):
+def product_quantity_update_on_delete(sender, instance, **kwargs):
     instance.product.quantity += instance.quantity
     instance.product.save()
+
+
+def product_price(request, pk):
+    if request.is_ajax():
+        product_item = Product.objects.get(pk=pk).first()
+        if product_item:
+            return JsonResponse({'price': product_item.price})
+        return JsonResponse({'price': 0})
